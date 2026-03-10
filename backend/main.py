@@ -62,7 +62,7 @@ def init_db():
 init_db()
 
 # Serve frontend
-FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend", "tamplates")
 if os.path.exists(FRONTEND_DIR):
     app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
