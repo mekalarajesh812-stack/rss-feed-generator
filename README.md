@@ -31,6 +31,33 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 Open **http://localhost:8000** in your browser.
 
+## Deploy to Production
+
+### Deploy to Render (Recommended - Free Tier ✨)
+
+1. Push code to GitHub
+2. Go to [https://render.com](https://render.com)
+3. Click **New Web Service**
+4. Connect GitHub repo → Select branch
+5. Configure:
+   - Environment: Docker
+   - Plan: Starter (free tier available)
+6. Deploy!
+
+**For detailed instructions**: See [DEPLOYMENT-RENDER.md](DEPLOYMENT-RENDER.md)
+
+**Free tier info**:
+- ✅ Free to deploy
+- ⚠️ Data resets on restart (add persistent disk for $12/mo)
+- ✅ Auto-deploys on GitHub push
+
+### Deploy to Other Platforms
+
+- **Railway**: [DEPLOYMENT-RENDER.md](DEPLOYMENT-RENDER.md) instructions work here too
+- **Heroku**: Use the `Procfile` (though Heroku's free tier is discontinued)
+- **DigitalOcean**: Docker support available
+- **AWS/Azure**: Any Docker-compatible platform
+
 ## API Endpoints
 | Method | Path | Description |
 |--------|------|-------------|

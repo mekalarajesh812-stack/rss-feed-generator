@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: rss-feed-generator
+    runtime: docker
+    plan: starter
+    
+    # Docker configuration
+    dockerfilePath: ./Dockerfile
+    
+    # Build configuration
+    buildCommand: pip install -r backend/requirements.txt
+    
+    # Health check
+    healthCheckPath: /docs
+    
+    # Environment variables
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: true
+    
+    # Auto-deploy on push
+    autoDeploy: true
