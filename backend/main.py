@@ -17,6 +17,7 @@ import re
 from urllib.parse import quote_plus
 import uuid
 import time
+from bs4 import BeautifulSoup
 
 app = FastAPI(title="RSS Feed Generator")
 
@@ -82,8 +83,43 @@ def detect_input_type(inp: str) -> str:
         return "url"
     return "keyword"
 
+async def extract_image(url: str, client: httpx.AsyncClient) -> str:
+    """Extract image from article page using og:image meta tag"""
+    try:
+        resp = await client.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=5,
+            follow_redirects=True
+        )
+        if resp.status_code != 200:
+            return None
+        
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        
+        # Primary: og:image meta tag
+        og_image = soup.find('meta', property='og:image')
+        if og_image and og_image.get('content'):
+            return og_image['content'].strip()
+        
+        # Secondary: twitter:image
+        twitter_image = soup.find('meta', {'name': 'twitter:image'})
+        if twitter_image and twitter_image.get('content'):
+            return twitter_image['content'].strip()
+        
+        # Fallback: first img tag in article
+        for img in soup.find_all('img', limit=20):
+            src = img.get('src', '').strip()
+            if src and src.startswith('http') and len(src) > 20:
+                if not any(skip in src.lower() for skip in ['logo', 'icon', 'tracking', 'pixel']):
+                    return src
+        
+        return None
+    except:
+        return None
+
 async def fetch_rss_from_url(url: str):
-    """Fetch and parse RSS/Atom feed from URL"""
+    """Fetch and parse RSS/Atom feed from URL with image extraction"""
     async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
         resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 FeedBot/1.0"})
         resp.raise_for_status()
@@ -91,41 +127,60 @@ async def fetch_rss_from_url(url: str):
     
     feed = feedparser.parse(content)
     items = []
-    for entry in feed.entries[:50]:
-        image_url = None
-        if hasattr(entry, 'media_content') and entry.media_content:
-            image_url = entry.media_content[0].get('url')
-        elif hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
-            image_url = entry.media_thumbnail[0].get('url')
+    
+    # Use separate client for parallel image extraction
+    async with httpx.AsyncClient(timeout=30, limits=httpx.Limits(max_connections=5)) as client:
+        tasks = []
         
-        # Try to find image in description
-        if not image_url and hasattr(entry, 'summary'):
-            img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', entry.get('summary', ''))
-            if img_match:
-                image_url = img_match.group(1)
-
-        items.append({
-            "title": entry.get("title", "No Title"),
-            "description": re.sub('<[^<]+?>', '', entry.get("summary", "")),
-            "link": entry.get("link", ""),
-            "pub_date": entry.get("published", datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")),
-            "guid": entry.get("id", entry.get("link", str(uuid.uuid4()))),
-            "image_url": image_url,
-        })
+        for entry in feed.entries[:25]:
+            image_url = None
+            
+            # Check feed-provided media first
+            if hasattr(entry, 'media_content') and entry.media_content:
+                image_url = entry.media_content[0].get('url')
+            elif hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
+                image_url = entry.media_thumbnail[0].get('url')
+            
+            # Check description for images
+            if not image_url and hasattr(entry, 'summary'):
+                img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', entry.get('summary', ''))
+                if img_match:
+                    image_url = img_match.group(1)
+            
+            # Fetch from article page if needed
+            article_link = entry.get("link", "")
+            if not image_url and article_link:
+                task = extract_image(article_link, client)
+            else:
+                task = None
+            
+            tasks.append((entry, image_url, task))
+        
+        # Execute all image extraction tasks in parallel
+        for entry, cached_image, task in tasks:
+            try:
+                final_image = cached_image or (await task if task else None)
+            except:
+                final_image = cached_image
+            
+            items.append({
+                "title": entry.get("title", "No Title"),
+                "description": re.sub('<[^<]+?>', '', entry.get("summary", ""))[:250],
+                "link": entry.get("link", ""),
+                "pub_date": entry.get("published", datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")),
+                "guid": entry.get("id", entry.get("link", str(uuid.uuid4()))),
+                "image_url": final_image,
+            })
     
     title = feed.feed.get("title", url)
     description = feed.feed.get("description", f"Feed from {url}")
     return title, description, items
 
 async def fetch_rss_from_keyword(keyword: str):
-    """Generate RSS feed from keyword using Google News RSS"""
+    """Generate RSS feed from keyword using Google News RSS - with image extraction"""
     encoded = quote_plus(keyword)
-    sources = [
-        f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en",
-        f"https://feeds.feedburner.com/TechCrunch",  # fallback example
-    ]
+    url = f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en"
     
-    url = sources[0]
     async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
         resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 FeedBot/1.0"})
         resp.raise_for_status()
@@ -133,15 +188,32 @@ async def fetch_rss_from_keyword(keyword: str):
     
     feed = feedparser.parse(content)
     items = []
-    for entry in feed.entries[:50]:
-        items.append({
-            "title": entry.get("title", "No Title"),
-            "description": re.sub('<[^<]+?>', '', entry.get("summary", "")),
-            "link": entry.get("link", ""),
-            "pub_date": entry.get("published", datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")),
-            "guid": entry.get("id", entry.get("link", str(uuid.uuid4()))),
-            "image_url": None,
-        })
+    
+    # Use separate client for parallel image extraction
+    async with httpx.AsyncClient(timeout=30, limits=httpx.Limits(max_connections=5)) as client:
+        tasks = []
+        
+        for entry in feed.entries[:20]:  # Google News: top 20 articles
+            article_link = entry.get("link", "")
+            # Queue image extraction task for each article
+            task = extract_image(article_link, client) if article_link else None
+            tasks.append((entry, task))
+        
+        # Execute all image extraction tasks in parallel
+        for entry, task in tasks:
+            try:
+                image_url = await task if task else None
+            except:
+                image_url = None
+            
+            items.append({
+                "title": entry.get("title", "No Title"),
+                "description": re.sub('<[^<]+?>', '', entry.get("summary", ""))[:250],
+                "link": entry.get("link", ""),
+                "pub_date": entry.get("published", datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")),
+                "guid": entry.get("id", entry.get("link", str(uuid.uuid4()))),
+                "image_url": image_url,
+            })
     
     return f"{keyword} - News Feed", f"Latest news about {keyword}", items
 
